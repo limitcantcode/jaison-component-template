@@ -1,0 +1,4 @@
+jaison-grpc>=1.1.4
+grpcio==1.68.1
+pyyaml==6.0.2
+python-dotenv==1.0.1
