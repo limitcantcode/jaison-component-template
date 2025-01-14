@@ -1,6 +1,13 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
+logging.basicConfig(
+    filename='output.log',
+    format="[%(asctime)s] [%(levelname)-5.5s] [%(filename)s::%(lineno)d %(funcName)s]: %(message)s",
+    level=logging.DEBUG
+)
+
 import argparse
 import asyncio
 import logging
@@ -90,5 +97,4 @@ if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument('--port')
     args = args.parse_args()
-    logging.basicConfig(level=logging.DEBUG)
     asyncio.run(serve(args.port))
