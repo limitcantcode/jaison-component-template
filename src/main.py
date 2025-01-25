@@ -1,6 +1,3 @@
-from dotenv import load_dotenv
-load_dotenv()
-
 import logging
 logging.basicConfig(
     filename='output.log',
@@ -13,8 +10,9 @@ import asyncio
 import logging
 import yaml
 import os
-import types
+from typing import Generator, AsyncGenerator
 import grpc
+import socket
 from jaison_grpc.common import Metadata, STTComponentRequest, STTComponentResponse, T2TComponentRequest, T2TComponentResponse, TTSGComponentRequest, TTSGComponentResponse, TTSCComponentRequest, TTSCComponentResponse
 from jaison_grpc.server import add_MetadataInformerServicer_to_server, add_STTComponentStreamerServicer_to_server, add_T2TComponentStreamerServicer_to_server, add_TTSGComponentStreamerServicer_to_server, add_TTSCComponentStreamerServicer_to_server
 from jaison_grpc.server import MetadataInformerServicer, STTComponentStreamerServicer, T2TComponentStreamerServicer, TTSGComponentStreamerServicer, TTSCComponentStreamerServicer
@@ -23,14 +21,17 @@ from custom import start_stt, start_t2t, start_ttsg, start_ttsc
 
 metadata = None
 
-def results_streamer(results):
-    if type(results) is not types.GeneratorType:
+async def results_streamer(results):
+    if not isinstance(results, (Generator,AsyncGenerator)):
         yield results
-    else:
+    elif isinstance(results,Generator):
         for result in results:
             yield result
+    else:
+        async for result in results:
+            yield result
 
-class STTComponentStreamer(STTComponentStreamerServicer):
+class MetadataInformer(MetadataInformerServicer):
     def metadata(self, request, context: grpc.aio.ServicerContext) -> Metadata:
         global metadata
         return Metadata(
@@ -44,28 +45,56 @@ class STTComponentStreamer(STTComponentStreamerServicer):
         )
 
 class STTComponentStreamer(STTComponentStreamerServicer):
-    async def invoke(self, request: STTComponentRequest, context: grpc.aio.ServicerContext) -> STTComponentResponse:
-        results = start_stt(request.audio)
-        for result in results_streamer(results):
-            yield request.run_id, result
+    async def invoke(self, request_iterator: AsyncGenerator, context: grpc.aio.ServicerContext) -> AsyncGenerator:
+        details_chunk = await anext(request_iterator)
+        run_id = details_chunk.run_id
+        logging.debug(f"Got request for run_id {run_id}")
+        
+        results = start_stt(request_iterator)
+        async for result in results_streamer(results):
+            yield STTComponentResponse(run_id=run_id, content_chunk=result)
 
 class T2TComponentStreamer(T2TComponentStreamerServicer):
-    async def invoke(self, request: T2TComponentRequest, context: grpc.aio.ServicerContext) -> T2TComponentResponse:
-        results = start_t2t(request.system_input, request.user_input)
-        for result in results_streamer(results):
-            yield request.run_id, result
+    async def invoke(self, request_iterator: AsyncGenerator, context: grpc.aio.ServicerContext) -> AsyncGenerator:
+        details_chunk = await anext(request_iterator)
+        run_id = details_chunk.run_id
+        logging.debug(f"Got request for run_id {run_id}")
+        
+        results = start_t2t(request_iterator)
+        async for result in results_streamer(results):
+            yield T2TComponentResponse(run_id=run_id, content_chunk=result)
 
 class TTSGComponentStreamer(TTSGComponentStreamerServicer):
-    async def invoke(self, request: TTSGComponentRequest, context: grpc.aio.ServicerContext) -> TTSGComponentResponse:
-        results = start_ttsg(request.content)
-        for result in results_streamer(results):
-            yield request.run_id, result
+    async def invoke(self, request_iterator: AsyncGenerator, context: grpc.aio.ServicerContext) -> AsyncGenerator:
+        details_chunk = await anext(request_iterator)
+        run_id = details_chunk.run_id
+        logging.debug(f"Got request for run_id {run_id}")
+        
+        results = start_ttsg(request_iterator)
+        async for result, sample_rate, sample_width, channels in results_streamer(results):
+            yield TTSGComponentResponse(
+                run_id=run_id, 
+                audio_chunk=result, 
+                sample_rate=sample_rate, 
+                sample_width=sample_width, 
+                channels=channels
+            )
 
 class TTSCComponentStreamer(TTSCComponentStreamerServicer):
-    async def invoke(self, request: TTSCComponentRequest, context: grpc.aio.ServicerContext) -> TTSCComponentResponse:
-        results = start_ttsc(request.audio)
-        for result in results_streamer(results):
-            yield request.run_id, result
+    async def invoke(self, request_iterator: AsyncGenerator, context: grpc.aio.ServicerContext) -> AsyncGenerator:
+        details_chunk = await anext(request_iterator)
+        run_id = details_chunk.run_id
+        logging.debug(f"Got request for run_id {run_id}")
+
+        results = start_ttsc(request_iterator)
+        async for result, sample_rate, sample_width, channels in results_streamer(results):
+            yield TTSCComponentResponse(
+                run_id=run_id, 
+                audio_chunk=result,
+                sample_rate=sample_rate, 
+                sample_width=sample_width, 
+                channels=channels
+            )
 
 async def serve(port) -> None:
     global metadata
@@ -74,7 +103,7 @@ async def serve(port) -> None:
     with open(os.path.join(os.getcwd(), 'metadata.yaml')) as f:
         metadata = yaml.safe_load(f)
     
-    add_STTComponentStreamerServicer_to_server(STTComponentStreamer(), server)
+    add_MetadataInformerServicer_to_server(MetadataInformer(), server)
     match metadata['type']:
         case 'stt':
             add_STTComponentStreamerServicer_to_server(STTComponentStreamer(), server)
@@ -93,8 +122,16 @@ async def serve(port) -> None:
     await server.start()
     await server.wait_for_termination()
 
+def get_open_port():
+    sock = socket.socket()
+    sock.bind(('', 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
-    args.add_argument('--port')
+    args.add_argument('--port',type=int,default=-1)
     args = args.parse_args()
-    asyncio.run(serve(args.port))
+    port = args.port if args.port != -1 else get_open_port()
+    asyncio.run(serve(port))
