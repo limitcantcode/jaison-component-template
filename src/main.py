@@ -1,4 +1,5 @@
 import logging
+import signal
 logging.basicConfig(
     filename='output.log',
     format="[%(asctime)s] [%(levelname)-5.5s] [%(filename)s::%(lineno)d %(funcName)s]: %(message)s",
@@ -120,7 +121,18 @@ async def serve(port) -> None:
     server.add_insecure_port(listen_addr)
     logging.info("Starting server on %s", listen_addr)
     await server.start()
-    await server.wait_for_termination()
+    
+    stop_event = asyncio.Event()
+    def shutdown_handler():
+        logging.info("Received termination signal, shutting down...")
+        stop_event.set()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, shutdown_handler)
+        
+    await stop_event.wait()
+    await server.stop(grace=5)
+    logging.info("Server stopped successfully.")
 
 def get_open_port():
     sock = socket.socket()
