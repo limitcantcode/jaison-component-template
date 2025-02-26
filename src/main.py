@@ -10,7 +10,7 @@ import asyncio
 import logging
 import yaml
 import os
-from typing import Generator, AsyncGenerator
+from typing import Generator, AsyncGenerator, Coroutine
 import grpc
 import socket
 from jaison_grpc.common import Metadata, STTComponentRequest, STTComponentResponse, T2TComponentRequest, T2TComponentResponse, TTSGComponentRequest, TTSGComponentResponse, TTSCComponentRequest, TTSCComponentResponse
@@ -22,8 +22,10 @@ from custom import start_stt, start_t2t, start_ttsg, start_ttsc
 metadata = None
 
 async def results_streamer(results):
-    if not isinstance(results, (Generator,AsyncGenerator)):
+    if not isinstance(results, (Generator,AsyncGenerator,Coroutine)):
         yield results
+    elif isinstance(results,Coroutine):
+        yield await results
     elif isinstance(results,Generator):
         for result in results:
             yield result
